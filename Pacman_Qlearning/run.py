@@ -409,14 +409,50 @@ class TrainingController(GameController):
                             self.pause.setPause(pauseTime=3, func=self.resetLevel)
 
     # ------------------------------------------------------------------
+    # Reward shaping
+    # ------------------------------------------------------------------
+
+    def _shaping_reward(self):
+        """
+        Potential-based shaping added at every node arrival.
+
+        +0.5  survival bonus per node reached
+        −1/3/8  danger penalty depending on how close a live ghost is
+        +2.0  if a FREIGHT ghost is within 5 tiles (encourages hunting)
+        """
+        r = 0.5  # just surviving is slightly positive
+        for ghost in self.ghosts:
+            mode = ghost.mode.current
+            if mode not in (FREIGHT, SPAWN):
+                dist_sq = (
+                    ghost.node.position - self.pacman.node.position
+                ).magnitudeSquared()
+                if   dist_sq < (2 * TILEWIDTH) ** 2:
+                    r -= 8.0
+                elif dist_sq < (4 * TILEWIDTH) ** 2:
+                    r -= 3.0
+                elif dist_sq < (6 * TILEWIDTH) ** 2:
+                    r -= 1.0
+            elif mode == FREIGHT:
+                dist_sq = (
+                    ghost.node.position - self.pacman.node.position
+                ).magnitudeSquared()
+                if dist_sq < (5 * TILEWIDTH) ** 2:
+                    r += 2.0
+        return r
+
+    # ------------------------------------------------------------------
     # Agent helpers
     # ------------------------------------------------------------------
 
     def _agent_decide(self):
-        """Q-update for the previous step, then pick next action."""
-        ghosts      = list(self.ghosts)
-        state       = self.agent.get_state(self.pacman, ghosts, self.pellets)
-        valid_dirs  = self.pacman.validDirections()
+        """Q(λ) update for the previous step, then pick next action."""
+        ghosts     = list(self.ghosts)
+        state      = self.agent.get_state(self.pacman, ghosts, self.pellets)
+        valid_dirs = self.pacman.validDirections()
+
+        # Add shaping reward for arriving at this node
+        self._step_reward += self._shaping_reward()
 
         if self._last_state is not None:
             self.agent.update(
@@ -430,10 +466,10 @@ class TrainingController(GameController):
         self.pacman.ai_direction = action
         self._last_state  = state
         self._last_action = action
-        self._step_reward = self.R_STEP   # reset with per-step penalty
+        self._step_reward = self.R_STEP
 
     def _terminal_update(self):
-        """Q-update with no next state (death or level clear)."""
+        """Q(λ) update on terminal state (death or level clear)."""
         if self._last_state is not None:
             self.agent.update(
                 self._last_state, self._last_action,
@@ -441,6 +477,7 @@ class TrainingController(GameController):
                 None, []
             )
             self._ep_total_reward += self._step_reward
+        self.agent.reset_traces()
         self._last_state  = None
         self._last_action = None
         self._step_reward = 0.0
@@ -462,11 +499,19 @@ class TrainingController(GameController):
             self.agent.decay_epsilon()
 
     # ------------------------------------------------------------------
-    # Override restartGame to intercept episode boundary
+    # Override restartGame / resetLevel to intercept episode boundaries
     # ------------------------------------------------------------------
 
     def restartGame(self):
         super().restartGame()
+        self.agent.reset_traces()
+        self._last_state  = None
+        self._last_action = None
+        self._step_reward = 0.0
+
+    def resetLevel(self):
+        super().resetLevel()
+        self.agent.reset_traces()
         self._last_state  = None
         self._last_action = None
         self._step_reward = 0.0

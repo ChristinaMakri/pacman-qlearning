@@ -1,4 +1,5 @@
 import sys
+import os
 import argparse
 import pygame
 from pygame.locals import *
@@ -295,7 +296,11 @@ class TrainingController(GameController):
     R_DEATH  = -500
     R_STEP   =   -1
 
-    def __init__(self, train=True):
+    def __init__(self, train=True, headless=False):
+        self.headless = headless
+        if headless:
+            os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
+            os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
         super().__init__()
         self.agent = QLearningAgent()
         self.train_mode = train
@@ -321,7 +326,8 @@ class TrainingController(GameController):
     # ------------------------------------------------------------------
 
     def update(self):
-        dt = self.clock.tick(30) / 1000.0
+        dt = 1 / 30.0 if self.headless else self.clock.tick(30) / 1000.0
+
         self.textgroup.update(dt)
         self.pellets.update(dt)
         if not self.pause.paused:
@@ -335,7 +341,6 @@ class TrainingController(GameController):
         if self.pacman.alive:
             if not self.pause.paused:
                 self.pacman.update(dt)
-                # Agent decides whenever Pac-Man arrives at a new node
                 if self.pacman.just_reached_node:
                     self._agent_decide()
         else:
@@ -353,8 +358,12 @@ class TrainingController(GameController):
         afterPauseMethod = self.pause.update(dt)
         if afterPauseMethod is not None:
             afterPauseMethod()
-        self.checkEvents()
-        self.render()
+
+        if self.headless:
+            pygame.event.pump()
+        else:
+            self.checkEvents()
+            self.render()
 
     # ------------------------------------------------------------------
     # Reward hooks (override parent event checks)
@@ -508,6 +517,8 @@ class TrainingController(GameController):
         self._last_state  = None
         self._last_action = None
         self._step_reward = 0.0
+        if self.headless:
+            self.pause.paused = False
 
     def resetLevel(self):
         super().resetLevel()
@@ -515,6 +526,13 @@ class TrainingController(GameController):
         self._last_state  = None
         self._last_action = None
         self._step_reward = 0.0
+        if self.headless:
+            self.pause.paused = False
+
+    def nextLevel(self):
+        super().nextLevel()
+        if self.headless:
+            self.pause.paused = False
 
     # ------------------------------------------------------------------
     # Training loop
@@ -523,12 +541,18 @@ class TrainingController(GameController):
     def train(self, num_episodes=500, save_every=100):
         """Run `num_episodes` full games and save the Q-table periodically."""
         self.startGame()
+        if self.headless:
+            self.pause.paused = False
         self._ep_count = 0
-        print(f"Training for {num_episodes} episodes …  (close window to stop early)")
-        while self._ep_count < num_episodes:
-            self.update()
-            if self._ep_count > 0 and self._ep_count % save_every == 0:
-                self.agent.save()
+        mode_str = "headless" if self.headless else "visual"
+        print(f"Training ({mode_str}) for {num_episodes} episodes …")
+        try:
+            while self._ep_count < num_episodes:
+                self.update()
+                if self._ep_count > 0 and self._ep_count % save_every == 0:
+                    self.agent.save()
+        except KeyboardInterrupt:
+            print("\nInterrupted — saving checkpoint …")
         self.agent.save()
         print("Training complete.")
         self._print_summary()
@@ -558,6 +582,8 @@ if __name__ == "__main__":
                         help="Number of training episodes (train mode only)")
     parser.add_argument("--save-every", type=int, default=100,
                         help="Save Q-table every N episodes (train mode only)")
+    parser.add_argument("--headless", action="store_true",
+                        help="Train without display (much faster)")
     args = parser.parse_args()
 
     if args.mode == "human":
@@ -567,7 +593,7 @@ if __name__ == "__main__":
             game.update()
 
     elif args.mode == "train":
-        game = TrainingController(train=True)
+        game = TrainingController(train=True, headless=args.headless)
         game.train(num_episodes=args.episodes, save_every=args.save_every)
 
     elif args.mode == "play":
